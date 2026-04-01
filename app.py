@@ -53,7 +53,7 @@ async def receive_whatsapp_message(request: Request, background_tasks: Backgroun
                 
                 ai_reply = get_ai_response(incoming_text, sender_number)
                 
-                ai_reply = f"Halo! Anda mengirim: {incoming_text}. Otak AI sedang dirakit."
+                #ai_reply = f"Halo! Anda mengirim: {incoming_text}. Otak AI sedang dirakit."
                 
                 background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
                 
