@@ -1,68 +1,86 @@
 import os
 import requests
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, Response
 from dotenv import load_dotenv
 
 load_dotenv()
-INFOBIP_BASE_URL = os.getenv("INFOBIP_BASE_URL")
-INFOBIP_API_KEY = os.getenv("INFOBIP_API_KEY")
-
 from bot_logic import get_ai_response 
 
-app = FastAPI(title="WhatsApp POS Bot")
+META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
+META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID")
+META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN")
+
+app = FastAPI(title="WhatsApp POS Bot (Meta)")
 
 def send_whatsapp_message(to_number: str, message_text: str):
-    """Mengirim pesan teks ke pengguna via Infobip WhatsApp API."""
-    
-    url = f"{INFOBIP_BASE_URL}/whatsapp/1/message/text"
+    """Mengirim balasan via Meta WhatsApp Cloud API."""
+    url = f"https://graph.facebook.com/v18.0/{META_PHONE_NUMBER_ID}/messages"
     
     headers = {
-        "Authorization": f"App {INFOBIP_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
     }
     
     payload = {
-        "from": "447860088970", 
+        "messaging_product": "whatsapp",
         "to": to_number,
-        "content": {
-            "text": message_text
-        }
+        "type": "text",
+        "text": {"body": message_text}
     }
     
     try:
         response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status() 
-        print(f"Pesan berhasil dikirim ke {to_number}")
+        response.raise_for_status()
+        print(f"Pesan terkirim ke {to_number}")
+        print(message_text)
     except requests.exceptions.RequestException as e:
-        print(f"Gagal mengirim pesan: {e}")
+        print(f"Gagal mengirim: {response.text if 'response' in locals() else e}")
+
+@app.get("/webhook")
+def verify_webhook(request: Request):
+    """Meta akan menembak endpoint ini saat Anda mengklik 'Verify and Save'."""
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    if mode == "subscribe" and token == META_VERIFY_TOKEN:
+        print("Webhook Meta Berhasil Diverifikasi!")
+        return Response(content=challenge, media_type="text/plain")
+    
+    return {"error": "Invalid token"}
 
 @app.post("/webhook")
-async def receive_whatsapp_message(request: Request, background_tasks: BackgroundTasks):
-    """Menerima pesan JSON yang dilempar oleh Infobip."""
-    
+async def receive_message(request: Request, background_tasks: BackgroundTasks):
+    """Menerima JSON super bersarang (nested) dari Meta."""
     try:
         payload = await request.json()
         
-        if "results" in payload:
-            for message in payload["results"]:
-                sender_number = message.get("from")
-                incoming_text = message.get("message", {}).get("text", "")
+        if payload.get("object") == "whatsapp_business_account":
+            entry = payload.get("entry", [])[0]
+            changes = entry.get("changes", [])[0]
+            value = changes.get("value", {})
+            
+            if "messages" in value:
+                message = value["messages"][0]
+                sender_number = message["from"]
+                incoming_text = message.get("text", {}).get("body", "")
                 
                 print(f"Pesan masuk dari {sender_number}: {incoming_text}")
                 
                 ai_reply = get_ai_response(incoming_text, sender_number)
                 
-                #ai_reply = f"Halo! Anda mengirim: {incoming_text}. Otak AI sedang dirakit."
-                
                 background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
+            
+            elif "statuses" in value:
+                status_info = value["statuses"][0]
+                status_type = status_info.get("status")
+                if status_type == "failed":
+                    errors = status_info.get("errors", [{}])[0]
+                    print(f"❌ PESAN GAGAL DIKIRIM! Alasan: {errors.get('title')} (Kode: {errors.get('code')})")
+                else:
+                    print(f"Status Pengiriman: {status_type}")
                 
         return {"status": "success"}
-        
     except Exception as e:
-        print(f"Error memproses webhook: {e}")
-        return {"status": "error", "message": str(e)}
-
-@app.get("/")
-def health_check():
-    return {"status": "Server Bot WhatsApp Aktif!"}
+        print(f"Error membaca webhook: {e}")
+        return {"status": "error"}
