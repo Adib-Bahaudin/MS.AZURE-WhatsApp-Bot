@@ -56,6 +56,16 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 
             sender_number = remote_jid.split("@")[0]
             
+            media_types = [
+                "audioMessage", "imageMessage", "videoMessage", 
+                "stickerMessage", "documentMessage", "locationMessage",
+                "contactMessage", "reactionMessage"
+            ]
+            
+            if any(media in message_info for media in media_types):
+                print(f"⏩ Mengabaikan pesan non-teks dari {sender_number}")
+                return {"status": "ignored", "reason": "media_message"}
+
             incoming_text = ""
             if "conversation" in message_info:
                 incoming_text = message_info["conversation"]
@@ -67,7 +77,10 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 
                 ai_reply = get_ai_response(incoming_text, sender_number)
                 
-                background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
+                if ai_reply != "SILENT_IGNORE":
+                    background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
+                else:
+                    print(f"🤫 Bot diam (Nomor {sender_number} sedang dalam masa jeda admin/spam)")
                 
         return {"status": "success"}
         
