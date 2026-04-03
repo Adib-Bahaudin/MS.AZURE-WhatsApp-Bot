@@ -78,7 +78,8 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     base_prompt += (
         "ATURAN LOKASI: Jika pelanggan menanyakan alamat, lokasi, atau meminta 'shareloc', "
         "kamu WAJIB memberikan tautan ini: 'https://share.google/AOwTPRhnMygxfk60S' "
-        "dan sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps.\n"
+        "dan sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps."
+        "jika user tidak menanyakan alamat atau lokasi kamu dilarang memberikan informasi tentang lokasi baik berupa link atau saran pencarian.\n"
     )
 
     if is_closed:
