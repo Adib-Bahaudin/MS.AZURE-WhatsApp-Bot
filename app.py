@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
 load_dotenv()
-from bot_logic import get_ai_response, toggle_ai
+from bot_logic import get_ai_response, toggle_ai, set_global_closed
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
@@ -57,20 +57,49 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             elif "extendedTextMessage" in message_info:
                 incoming_text = message_info["extendedTextMessage"].get("text", "")
 
+            command = incoming_text.strip().lower()
+
+            if command == "/matikan_ai":
+                toggle_ai(sender_number, turn_off=True)
+                print(f"🛑 AI DIMATIKAN secara manual untuk {sender_number}")
+                background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dimatikan untuk chat ini)*")
+                return {"status": "success", "reason": "ai_disabled_manually"}
+
             if key_info.get("fromMe") == True:
-                command = incoming_text.strip().lower()
-                
-                if command == "/matikan_ai":
-                    toggle_ai(sender_number, turn_off=True)
-                    print(f"🛑 AI DIMATIKAN secara manual untuk {sender_number}")
-                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dimatikan untuk chat ini)*")
-                    return {"status": "success", "reason": "ai_disabled_manually"}
-                
-                elif command == "/hidupkan_ai":
+                if command == "/hidupkan_ai":
                     toggle_ai(sender_number, turn_off=False)
                     print(f"✅ AI DIHIDUPKAN secara manual untuk {sender_number}")
                     background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dihidupkan untuk chat ini)*")
                     return {"status": "success", "reason": "ai_enabled_manually"}
+
+                elif command.startswith("/tutup_sementara"):
+                    parts = incoming_text.strip().split(" ", 1)
+                    
+                    if len(parts) > 1:
+                        reopen_info = parts[1].strip()
+                        set_global_closed(True, reopen_info)
+                        pesan_balasan = f"*(Sistem: Status Toko diset TUTUP SEMENTARA. AI akan memberitahu pelanggan bahwa toko buka kembali: {reopen_info})*"
+                    else:
+                        set_global_closed(True)
+                        pesan_balasan = "*(Sistem: Status Toko diset TUTUP SEMENTARA secara global. AI akan merespon alasan admin keluar tanpa estimasi waktu)*"
+                        
+                    background_tasks.add_task(send_whatsapp_message, sender_number, pesan_balasan)
+                    return {"status": "success"}
+                
+                elif command == "/buka_kembali":
+                    set_global_closed(False)
+                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: Toko telah DIBUKA KEMBALI. AI kembali ke mode normal)*")
+                    return {"status": "success"}
+
+                elif command == "/kecualikan_ai":
+                    set_permanent_exclude(sender_number, True)
+                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: Chat ini telah DIKECUALIKAN dari AI selamanya)*")
+                    return {"status": "success"}
+                
+                elif command == "/tambahkan_ai":
+                    set_permanent_exclude(sender_number, False)
+                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: Chat ini telah DITAMBAHKAN kembali ke daftar AI)*")
+                    return {"status": "success"}
                 
                 return {"status": "ignored", "reason": "fromMe"}
             

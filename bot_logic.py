@@ -13,11 +13,34 @@ client = AzureOpenAI(
 
 WIB = timezone(timedelta(hours=7))
 
+global_settings = {
+    "is_temporary_closed": False,
+    "reopen_info": None
+}
+
+def set_global_closed(status: bool, reopen_info: str = None):
+    """Mengatur status tutup sementara secara global beserta info kapan buka kembali"""
+    global_settings["is_temporary_closed"] = status
+    global_settings["reopen_info"] = reopen_info if status else None
+
 user_database = {}
 
-# ==========================================
-# FUNGSI: MENGATUR STATUS AI (ON/OFF)
-# ==========================================
+def set_permanent_exclude(sender_number: str, status: bool):
+    """Mengatur pengecualian AI secara permanen untuk nomor tertentu"""
+    now = datetime.now(WIB)
+    if sender_number not in user_database:
+        user_database[sender_number] = {
+            "last_seen": None,
+            "blocked_until": None,
+            "spam_count": 0,
+            "spam_timer": now - timedelta(minutes=1),
+            "is_ai_off": False,
+            "ai_off_timestamp": None,
+            "is_excluded": status
+        }
+    else:
+        user_database[sender_number]["is_excluded"] = status
+
 def toggle_ai(sender_number: str, turn_off: bool):
     now = datetime.now(WIB)
     if sender_number not in user_database:
@@ -25,9 +48,10 @@ def toggle_ai(sender_number: str, turn_off: bool):
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
-            "spam_timer": now,
+            "spam_timer": now - timedelta(minutes=1),
             "is_ai_off": turn_off,
-            "ai_off_timestamp": now if turn_off else None 
+            "ai_off_timestamp": now if turn_off else None,
+            "is_excluded": False
         }
     else:
         user_database[sender_number]["is_ai_off"] = turn_off
@@ -42,12 +66,16 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
-            "spam_timer": now,
+            "spam_timer": now - timedelta(minutes=1),
             "is_ai_off": False,
-            "ai_off_timestamp": None
+            "ai_off_timestamp": None,
+            "is_excluded": False
         }
     
     user = user_database[sender_number]
+
+    if user.get("is_excluded", False):
+        return "SILENT_IGNORE"
 
     # ==========================================
     # FILTER 0: CEK AI MATI & AUTO-WAKEUP 12 JAM
@@ -76,7 +104,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     else:
         user["spam_count"] += 1
         if user["spam_count"] > 4:
-            user["blocked_until"] = now + timedelta(minutes=15)
+            user["blocked_until"] = now + timedelta(minutes=59)
             return "Sistem mendeteksi terlalu banyak pesan. Fitur asisten otomatis dijeda sementara. 🙏"
 
     # ==========================================
@@ -92,7 +120,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     is_new_customer = False
     if user["last_seen"] is None:
         is_new_customer = True
-    elif (now - user["last_seen"]).days >= 14:
+    elif (now - user["last_seen"]).days >= 7:
         is_new_customer = True
 
     user["last_seen"] = now
@@ -100,47 +128,76 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     # ==========================================
     # FILTER 5: MERAKIT INSTRUKSI (PROMPT) KE AI
     # ==========================================
-    base_prompt = (
-        "Anda adalah Artificial Intelligence (AI) asisten dari toko 'Barokah Copy & Printing' yang ramah, hangat, dan cerdas. "
-        "Jawablah dengan singkat dan tidak bertele-tele. "
-        "ATURAN FORMAT JAWABAN KAMU: Kamu WAJIB menggunakan spasi antar paragraf (baris kosong/enter ganda) untuk memisahkan sapaan, informasi utama, dan penutup agar pesan rapi dan mudah dibaca di layar HP. "
-        "ATURAN LINK: DILARANG KERAS menggunakan format markdown untuk tautan (seperti [teks](url)). Tuliskan URL secara mentah/polos saja.\n"
-    )
-    
-    if is_new_customer:
-        base_prompt += "PENGGUNA INI PELANGGAN BARU. Awali pesanmu dengan memperkenalkan diri secara singkat bahwa namamu adalah 'Whitehat' dalam satu paragraf tersendiri.\n"
+    base_prompt = ("")
 
-    base_prompt += (
-        "INFORMASI LAYANAN TOKO: Jika pelanggan bertanya tentang layanan, apa yang dijual, atau apa yang bisa dilakukan di toko, beritahu bahwa toko melayani: "
-        "Foto Copy, Print Copy, Foto copy dan print copy bolak balik, Print Warna, Print bolak balik, Cetak Foto, Copy Warna, Laminating dokumen, Press dokumen, Scan dokumen, Jilid, dan Menjual Aneka ATK. "
-        "Kamu bisa menyebutkan layanan ini dalam bentuk poin-poin yang rapi jika diminta.\n"
-    )
+    if global_settings["is_temporary_closed"]:
+        current_time_str = now.strftime('%H:%M WIB')
+        reopen_info = global_settings["reopen_info"]
+        info_tambahan = ""
 
-    base_prompt += (
-        "ATURAN LOKASI: Jika pelanggan menanyakan alamat, lokasi, atau meminta 'shareloc', "
-        "kamu WAJIB memberikan tautan ini: https://share.google/AOwTPRhnMygxfk60S "
-        "Ingat, tuliskan URL mentahnya saja, JANGAN gunakan tanda kurung siku atau format markdown. "
-        "Setelah itu, sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps. "
-        "Jika user tidak menanyakan alamat atau lokasi kamu dilarang memberikan informasi tentang lokasi baik berupa link atau saran pencarian.\n"
-    )
+        if reopen_info:
+            info_tambahan = f"Toko akan buka kembali: {reopen_info}."
+        else:
+            info_tambahan = "Admin sedang keluar sebentar ada urusan mendesak."
 
-    if is_closed:
-        base_prompt += (
-            f"STATUS TOKO: TUTUP. Saat ini jam menunjukkan pukul {current_time_str}. (Jam buka: 07:00 - 19:00 WIB). "
-            "TUGASMU: Beritahu pelanggan dengan sangat ramah bahwa toko sedang tutup. "
-            "Sesuaikan sapaanmu dengan waktu. "
-            "TOLAK permintaan cek harga/stok atau belanja dengan halus, dan persilakan mereka menghubungi kembali pada jam buka. "
-            "Pastikan informasi toko tutup dipisah ke dalam paragraf yang berbeda.\n"
+        base_prompt = (
+            "Anda adalah Artificial Intelligence (AI) asisten dari toko 'Barokah Copy & Printing' yang ramah, hangat, dan cerdas. "
+            f"INFORMASI PENTING: Saat ini jam {current_time_str}. Toko sedang TUTUP SEMENTARA. {info_tambahan} "
+            "TUGAS ANDA: Beritahu pelanggan dengan bahasa yang sangat ramah, hangat, dan sopan bahwa admin sedang tidak di tempat. "
+            "Minta mereka menunggu sebentar atau menghubungi lagi nanti. Jangan menerima pesanan atau cek harga sekarang. "
+            "ATURAN FORMAT: Gunakan spasi antar paragraf agar rapi."
         )
     else:
-        base_prompt += (
-            f"STATUS TOKO: BUKA. Saat ini jam menunjukkan pukul {current_time_str}. "
-            "PENTING: Jika pengguna menanyakan hal di luar konteks belanja atau sapaan wajar, tolaklah menjawab dengan halus.\n"
-            "ATURAN KHUSUS: Karena database toko belum terhubung, kamu TIDAK BISA mengecek stok atau harga. "
-            "Oleh karena itu, jika niat pelanggan adalah menanyakan HARGA, STOK BARANG, atau INGIN MEMESAN, "
-            "kamu WAJIB membalas pesan HANYA dengan satu kode rahasia ini: ESKALASI_ADMIN. "
-            "Jangan tambahkan kata apa pun selain ESKALASI_ADMIN."
+        base_prompt = (
+            "Anda adalah Artificial Intelligence (AI) asisten dari toko 'Barokah Copy & Printing' yang ramah, hangat, dan cerdas. "
+            "Anda saat ini sedang merespon customer melalui saluran whatsapp resmi toko. "
+            "Jawablah dengan singkat dan tidak bertele-tele. "
+            "ATURAN FORMAT JAWABAN KAMU: Kamu WAJIB menggunakan spasi antar paragraf (baris kosong/enter ganda) untuk memisahkan sapaan, informasi utama, dan penutup agar pesan rapi dan mudah dibaca di layar HP. "
+            "ATURAN LINK: DILARANG KERAS menggunakan format markdown untuk tautan (seperti [teks](url)). Tuliskan URL secara mentah/polos saja.\n"
         )
+
+        base_prompt += (
+            "INFORMASI LAYANAN TOKO: Jika pelanggan bertanya tentang layanan, apa yang dijual, atau apa yang bisa dilakukan di toko, beritahu bahwa toko melayani: "
+            "Foto Copy, Print Copy, Foto copy dan print copy bolak balik, Print Warna, Print bolak balik, Cetak Foto, Copy Warna, Laminating dokumen, Press dokumen, Scan dokumen, Jilid, dan Menjual Aneka ATK. "
+            "Kamu bisa menyebutkan layanan ini dalam bentuk poin-poin yang rapi jika diminta.\n"
+            "jika customer ingin melakukan cetak foto atau print kamu bisa memberitahu customer untuk mengirimkan file terlebih dahulu, agar bisa diproses oleh admin. "
+        )
+
+        base_prompt += (
+            "ATURAN LOKASI: Jika pelanggan menanyakan alamat, lokasi, atau meminta 'shareloc', "
+            "kamu WAJIB memberikan tautan ini: https://share.google/AOwTPRhnMygxfk60S "
+            "Ingat, tuliskan URL mentahnya saja, JANGAN gunakan tanda kurung siku atau format markdown. "
+            "Setelah itu, sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps. "
+            "Jika user tidak menanyakan alamat atau lokasi kamu dilarang memberikan informasi tentang lokasi baik berupa link atau saran pencarian.\n"
+        )
+
+        if is_closed:
+            base_prompt += (
+                f"STATUS TOKO: TUTUP. Saat ini jam menunjukkan pukul {current_time_str}. (Jam buka: 07:00 - 19:00 WIB). "
+                "TUGASMU: Beritahu pelanggan dengan sangat ramah bahwa toko sedang tutup. "
+                "Sesuaikan sapaanmu dengan waktu. "
+                "TOLAK permintaan cek harga/stok atau belanja dengan halus, dan persilakan mereka menghubungi kembali pada jam buka. "
+                "Pastikan informasi toko tutup dipisah ke dalam paragraf yang berbeda.\n"
+            )
+        else:
+            base_prompt += (
+                f"STATUS TOKO: BUKA. Saat ini jam menunjukkan pukul {current_time_str}. "
+                "PENTING: Jika pengguna menanyakan hal di luar konteks belanja atau sapaan wajar, tolaklah menjawab dengan halus.\n"
+                "ATURAN KHUSUS: Karena database toko belum terhubung, kamu TIDAK BISA mengecek stok atau harga. "
+                "Oleh karena itu, jika niat pelanggan adalah menanyakan HARGA, STOK BARANG, atau INGIN MEMESAN, "
+                "kamu WAJIB membalas pesan HANYA dengan satu kode rahasia ini: ESKALASI_ADMIN. "
+                "Jangan tambahkan kata apa pun selain ESKALASI_ADMIN."
+            )
+
+    if is_new_customer:
+        base_prompt += "PENGGUNA INI PELANGGAN BARU. Awali pesanmu dengan memperkenalkan diri secara singkat bahwa namamu adalah 'Whitehat' dalam satu paragraf tersendiri.\n"
+    else:
+        base_prompt+= "kamu tidak perlu menyapa terlebih dahulu, langsung berikan jawaban sesuai dengan apa yang dibutuhkan oleh customer dengan ramah, ceria, dan cerdas.\n"
+    
+    base_prompt += (
+        "Diakhir baris Jawaban Kamu kamu wajib menambahkan footer, gunakan baris sendiri dibawah kalimat penutup kamu. " 
+        "ATURAN FOOTER: Kamu WAJIB menyertakan informasi kepada customer bahwa untuk mematikan fitur AI Respon cukup ketik '/matikan_ai', sampaikan dengan singkat dan ceria."
+    )
 
     # ==========================================
     # EKSEKUSI KE AZURE OPENAI & POST-PROCESSING
