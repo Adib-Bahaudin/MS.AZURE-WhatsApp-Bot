@@ -15,6 +15,25 @@ WIB = timezone(timedelta(hours=7))
 
 user_database = {}
 
+# ==========================================
+# FUNGSI: MENGATUR STATUS AI (ON/OFF)
+# ==========================================
+def toggle_ai(sender_number: str, turn_off: bool):
+    now = datetime.now(WIB)
+    if sender_number not in user_database:
+        user_database[sender_number] = {
+            "last_seen": None,
+            "blocked_until": None,
+            "spam_count": 0,
+            "spam_timer": now,
+            "is_ai_off": turn_off,
+            "ai_off_timestamp": now if turn_off else None 
+        }
+    else:
+        user_database[sender_number]["is_ai_off"] = turn_off
+        user_database[sender_number]["ai_off_timestamp"] = now if turn_off else None
+
+
 def get_ai_response(user_text: str, sender_number: str) -> str:
     now = datetime.now(WIB)
     
@@ -23,10 +42,24 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
-            "spam_timer": now
+            "spam_timer": now,
+            "is_ai_off": False,
+            "ai_off_timestamp": None
         }
     
     user = user_database[sender_number]
+
+    # ==========================================
+    # FILTER 0: CEK AI MATI & AUTO-WAKEUP 12 JAM
+    # ==========================================
+    if user.get("is_ai_off", False):
+        off_time = user.get("ai_off_timestamp")
+        if off_time and (now - off_time) > timedelta(hours=12):
+            user["is_ai_off"] = False
+            user["ai_off_timestamp"] = None
+            print(f"🔄 [Sistem] AI otomatis dihidupkan kembali untuk {sender_number} karena sudah > 12 jam.")
+        else:
+            return "SILENT_IGNORE"
 
     # ==========================================
     # FILTER 1: CEK APAKAH SEDANG DIBLOKIR / DI-HANDOVER

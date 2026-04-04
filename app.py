@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
 load_dotenv()
-from bot_logic import get_ai_response 
+from bot_logic import get_ai_response, toggle_ai
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
@@ -38,7 +38,6 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
     """Menerima Webhook dari Evolution API."""
     try:
         payload = await request.json()
-        
         event_type = payload.get("event")
         
         if event_type == "messages.upsert":
@@ -46,15 +45,34 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             message_info = data.get("message", {})
             key_info = data.get("key", {})
             
-            if key_info.get("fromMe") == True:
-                return {"status": "ignored", "reason": "fromMe"}
-            
             remote_jid = key_info.get("remoteJid", "")
-            
             if "@g.us" in remote_jid:
                 return {"status": "ignored", "reason": "group_message"}
                 
             sender_number = remote_jid.split("@")[0]
+            
+            incoming_text = ""
+            if "conversation" in message_info:
+                incoming_text = message_info["conversation"]
+            elif "extendedTextMessage" in message_info:
+                incoming_text = message_info["extendedTextMessage"].get("text", "")
+
+            if key_info.get("fromMe") == True:
+                command = incoming_text.strip().lower()
+                
+                if command == "/matikan_ai":
+                    toggle_ai(sender_number, turn_off=True)
+                    print(f"🛑 AI DIMATIKAN secara manual untuk {sender_number}")
+                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dimatikan untuk chat ini)*")
+                    return {"status": "success", "reason": "ai_disabled_manually"}
+                
+                elif command == "/hidupkan_ai":
+                    toggle_ai(sender_number, turn_off=False)
+                    print(f"✅ AI DIHIDUPKAN secara manual untuk {sender_number}")
+                    background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dihidupkan untuk chat ini)*")
+                    return {"status": "success", "reason": "ai_enabled_manually"}
+                
+                return {"status": "ignored", "reason": "fromMe"}
             
             media_types = [
                 "audioMessage", "imageMessage", "videoMessage", 
@@ -66,21 +84,14 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 print(f"⏩ Mengabaikan pesan non-teks dari {sender_number}")
                 return {"status": "ignored", "reason": "media_message"}
 
-            incoming_text = ""
-            if "conversation" in message_info:
-                incoming_text = message_info["conversation"]
-            elif "extendedTextMessage" in message_info:
-                incoming_text = message_info["extendedTextMessage"].get("text", "")
-                
             if incoming_text:
                 print(f"📥 Pesan masuk dari {sender_number}: {incoming_text}")
-                
                 ai_reply = get_ai_response(incoming_text, sender_number)
                 
                 if ai_reply != "SILENT_IGNORE":
                     background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
                 else:
-                    print(f"🤫 Bot diam (Nomor {sender_number} sedang dalam masa jeda admin/spam)")
+                    print(f"🤫 Bot diam (Nomor {sender_number} sedang dalam masa jeda admin/spam/AI off)")
                 
         return {"status": "success"}
         
