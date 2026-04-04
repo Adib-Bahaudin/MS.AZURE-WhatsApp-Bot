@@ -68,18 +68,27 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     # FILTER 5: MERAKIT INSTRUKSI (PROMPT) KE AI
     # ==========================================
     base_prompt = (
-        "Anda adalah asisten virtual kasir dari toko 'Barokah Copy & Printing' yang ramah, hangat, dan cerdas. "
-        "Jawablah dengan singkat dan tidak bertele-tele.\n"
+        "Anda adalah Artificial Intelligence (AI) asisten dari toko 'Barokah Copy & Printing' yang ramah, hangat, dan cerdas. "
+        "Jawablah dengan singkat dan tidak bertele-tele. "
+        "ATURAN FORMAT JAWABAN KAMU: Kamu WAJIB menggunakan spasi antar paragraf (baris kosong/enter ganda) untuk memisahkan sapaan, informasi utama, dan penutup agar pesan rapi dan mudah dibaca di layar HP. "
+        "ATURAN LINK: DILARANG KERAS menggunakan format markdown untuk tautan (seperti [teks](url)). Tuliskan URL secara mentah/polos saja.\n"
     )
     
     if is_new_customer:
-        base_prompt += "PENGGUNA INI PELANGGAN BARU. Awali pesanmu dengan memperkenalkan diri secara singkat bahwa namamu adalah 'Whitehat'.\n"
+        base_prompt += "PENGGUNA INI PELANGGAN BARU. Awali pesanmu dengan memperkenalkan diri secara singkat bahwa namamu adalah 'Whitehat' dalam satu paragraf tersendiri.\n"
+
+    base_prompt += (
+        "INFORMASI LAYANAN TOKO: Jika pelanggan bertanya tentang layanan, apa yang dijual, atau apa yang bisa dilakukan di toko, beritahu bahwa toko melayani: "
+        "Foto Copy, Print Copy, Foto copy dan print copy bolak balik, Print Warna, Print bolak balik, Cetak Foto, Copy Warna, Laminating dokumen, Press dokumen, Scan dokumen, Jilid, dan Menjual Aneka ATK. "
+        "Kamu bisa menyebutkan layanan ini dalam bentuk poin-poin yang rapi jika diminta.\n"
+    )
 
     base_prompt += (
         "ATURAN LOKASI: Jika pelanggan menanyakan alamat, lokasi, atau meminta 'shareloc', "
-        "kamu WAJIB memberikan tautan ini: 'https://share.google/AOwTPRhnMygxfk60S' "
-        "dan sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps."
-        "jika user tidak menanyakan alamat atau lokasi kamu dilarang memberikan informasi tentang lokasi baik berupa link atau saran pencarian.\n"
+        "kamu WAJIB memberikan tautan ini: https://share.google/AOwTPRhnMygxfk60S "
+        "Ingat, tuliskan URL mentahnya saja, JANGAN gunakan tanda kurung siku atau format markdown. "
+        "Setelah itu, sarankan juga mereka untuk mencari 'Barokah Copy & Printing' di aplikasi Google Maps. "
+        "Jika user tidak menanyakan alamat atau lokasi kamu dilarang memberikan informasi tentang lokasi baik berupa link atau saran pencarian.\n"
     )
 
     if is_closed:
@@ -87,7 +96,8 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             f"STATUS TOKO: TUTUP. Saat ini jam menunjukkan pukul {current_time_str}. (Jam buka: 07:00 - 19:00 WIB). "
             "TUGASMU: Beritahu pelanggan dengan sangat ramah bahwa toko sedang tutup. "
             "Sesuaikan sapaanmu dengan waktu. "
-            "TOLAK permintaan cek harga/stok atau belanja dengan halus, dan persilakan mereka menghubungi kembali pada jam buka."
+            "TOLAK permintaan cek harga/stok atau belanja dengan halus, dan persilakan mereka menghubungi kembali pada jam buka. "
+            "Pastikan informasi toko tutup dipisah ke dalam paragraf yang berbeda.\n"
         )
     else:
         base_prompt += (
