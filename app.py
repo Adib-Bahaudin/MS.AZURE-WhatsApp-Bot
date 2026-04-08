@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
 load_dotenv()
-from bot_logic import get_ai_response, toggle_ai, set_global_closed
+from bot_logic import get_ai_response, toggle_ai, set_global_closed, set_permanent_exclude
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")

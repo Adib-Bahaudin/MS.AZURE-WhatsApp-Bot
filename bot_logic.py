@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from openai import AzureOpenAI
 from dotenv import load_dotenv
@@ -23,13 +24,70 @@ def set_global_closed(status: bool, reopen_info: str = None):
     global_settings["is_temporary_closed"] = status
     global_settings["reopen_info"] = reopen_info if status else None
 
-user_database = {}
+def init_db():
+    conn = sqlite3.connect('users.db', timeout=10)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            sender_number TEXT PRIMARY KEY,
+            last_seen TEXT,
+            blocked_until TEXT,
+            spam_count INTEGER,
+            spam_timer TEXT,
+            is_ai_off INTEGER,
+            ai_off_timestamp TEXT,
+            is_excluded INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_user(sender_number: str) -> dict:
+    conn = sqlite3.connect('users.db', timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE sender_number=?", (sender_number,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row is None:
+        return None
+    
+    return {
+        "last_seen": datetime.fromisoformat(row[1]) if row[1] else None,
+        "blocked_until": datetime.fromisoformat(row[2]) if row[2] else None,
+        "spam_count": row[3],
+        "spam_timer": datetime.fromisoformat(row[4]) if row[4] else None,
+        "is_ai_off": bool(row[5]),
+        "ai_off_timestamp": datetime.fromisoformat(row[6]) if row[6] else None,
+        "is_excluded": bool(row[7])
+    }
+
+def save_user(sender_number: str, user: dict):
+    conn = sqlite3.connect('users.db', timeout=10)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        sender_number,
+        user["last_seen"].isoformat() if user.get("last_seen") else None,
+        user["blocked_until"].isoformat() if user.get("blocked_until") else None,
+        user.get("spam_count", 0),
+        user["spam_timer"].isoformat() if user.get("spam_timer") else None,
+        int(user.get("is_ai_off", False)),
+        user["ai_off_timestamp"].isoformat() if user.get("ai_off_timestamp") else None,
+        int(user.get("is_excluded", False))
+    ))
+    conn.commit()
+    conn.close()
 
 def set_permanent_exclude(sender_number: str, status: bool):
     """Mengatur pengecualian AI secara permanen untuk nomor tertentu"""
     now = datetime.now(WIB)
-    if sender_number not in user_database:
-        user_database[sender_number] = {
+    user = get_user(sender_number)
+    if user is None:
+        user = {
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
@@ -39,12 +97,14 @@ def set_permanent_exclude(sender_number: str, status: bool):
             "is_excluded": status
         }
     else:
-        user_database[sender_number]["is_excluded"] = status
+        user["is_excluded"] = status
+    save_user(sender_number, user)
 
 def toggle_ai(sender_number: str, turn_off: bool):
     now = datetime.now(WIB)
-    if sender_number not in user_database:
-        user_database[sender_number] = {
+    user = get_user(sender_number)
+    if user is None:
+        user = {
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
@@ -54,15 +114,17 @@ def toggle_ai(sender_number: str, turn_off: bool):
             "is_excluded": False
         }
     else:
-        user_database[sender_number]["is_ai_off"] = turn_off
-        user_database[sender_number]["ai_off_timestamp"] = now if turn_off else None
+        user["is_ai_off"] = turn_off
+        user["ai_off_timestamp"] = now if turn_off else None
+    save_user(sender_number, user)
 
 
 def get_ai_response(user_text: str, sender_number: str) -> str:
     now = datetime.now(WIB)
     
-    if sender_number not in user_database:
-        user_database[sender_number] = {
+    user = get_user(sender_number)
+    if user is None:
+        user = {
             "last_seen": None,
             "blocked_until": None,
             "spam_count": 0,
@@ -71,10 +133,9 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             "ai_off_timestamp": None,
             "is_excluded": False
         }
-    
-    user = user_database[sender_number]
 
     if user.get("is_excluded", False):
+        save_user(sender_number, user)
         return "SILENT_IGNORE"
 
     # ==========================================
@@ -87,12 +148,14 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             user["ai_off_timestamp"] = None
             print(f"🔄 [Sistem] AI otomatis dihidupkan kembali untuk {sender_number} karena sudah > 12 jam.")
         else:
+            save_user(sender_number, user)
             return "SILENT_IGNORE"
 
     # ==========================================
     # FILTER 1: CEK APAKAH SEDANG DIBLOKIR / DI-HANDOVER
     # ==========================================
     if user["blocked_until"] and now < user["blocked_until"]:
+        save_user(sender_number, user)
         return "SILENT_IGNORE"
 
     # ==========================================
@@ -105,6 +168,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         user["spam_count"] += 1
         if user["spam_count"] > 4:
             user["blocked_until"] = now + timedelta(minutes=59)
+            save_user(sender_number, user)
             return "Sistem mendeteksi terlalu banyak pesan. Fitur asisten otomatis dijeda sementara. 🙏"
 
     # ==========================================
@@ -217,10 +281,13 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
 
         if "ESKALASI_ADMIN" in ai_reply:
             user["blocked_until"] = now + timedelta(hours=1)
+            save_user(sender_number, user)
             return "Terkait info produk, stok, atau harga, Admin Toko kami akan membalas pesan kakak secara manual sesaat lagi ya. Mohon ditunggu... 👨‍💻\n*(Asisten AI dijeda 1 jam)*"
 
+        save_user(sender_number, user)
         return ai_reply
 
     except Exception as e:
         print(f"❌ Error pada Azure OpenAI: {e}")
+        save_user(sender_number, user)
         return "Mohon maaf kak, sistem asisten kami sedang gangguan sesaat. 🙏"
