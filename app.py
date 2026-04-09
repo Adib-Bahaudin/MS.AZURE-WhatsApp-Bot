@@ -1,16 +1,19 @@
 import os
+import time
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
 load_dotenv()
-from bot_logic import get_ai_response, toggle_ai, set_global_closed, set_permanent_exclude
+from bot_logic import get_ai_response, toggle_ai, set_global_closed, set_permanent_exclude, ensure_db_ready
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 
 app = FastAPI(title="WhatsApp POS Bot (Evolution API)")
+
+latest_messages = {}
 
 def send_whatsapp_message(to_number: str, message_text: str):
     """Mengirim balasan via Evolution API."""
@@ -32,6 +35,30 @@ def send_whatsapp_message(to_number: str, message_text: str):
         print(f"✅ Pesan terkirim ke {to_number}")
     except requests.exceptions.RequestException as e:
         print(f"❌ Gagal mengirim pesan: {response.text if 'response' in locals() else e}")
+
+def process_and_send_reply(incoming_text: str, sender_number: str, message_timestamp: float):
+    """Memproses AI di latar belakang dengan sistem prioritas pesan terbaru."""
+    try:
+        
+        ensure_db_ready() 
+        
+        if latest_messages.get(sender_number) != message_timestamp:
+            print(f"⏩ Batal proses AI: Ada pesan yang lebih baru dari {sender_number}.")
+            return
+
+        ai_reply = get_ai_response(incoming_text, sender_number)
+        
+        if latest_messages.get(sender_number) != message_timestamp:
+            print(f"⏩ Batal balas: {sender_number} mengirim pesan baru saat AI sedang mengetik.")
+            return
+
+        if ai_reply != "SILENT_IGNORE":
+            send_whatsapp_message(sender_number, ai_reply)
+        else:
+            print(f"🤫 Bot diam (Nomor {sender_number} sedang jeda admin/spam/AI off)")
+            
+    except Exception as e:
+        print(f"❌ Error memproses AI: {e}")
 
 @app.post("/webhook")
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
@@ -115,17 +142,18 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
 
             if incoming_text:
                 print(f"📥 Pesan masuk dari {sender_number}: {incoming_text}")
-                ai_reply = get_ai_response(incoming_text, sender_number)
                 
-                if ai_reply != "SILENT_IGNORE":
-                    background_tasks.add_task(send_whatsapp_message, sender_number, ai_reply)
-                else:
-                    print(f"🤫 Bot diam (Nomor {sender_number} sedang dalam masa jeda admin/spam/AI off)")
+                current_time = time.time()
+                
+                latest_messages[sender_number] = current_time
+                
+                background_tasks.add_task(process_and_send_reply, incoming_text, sender_number, current_time)
                 
         return {"status": "success"}
         
     except Exception as e:
-        print(f"❌ Error membaca webhook: {e}")
+        import traceback
+        print(f"❌ Error membaca webhook: {traceback.format_exc()}")
         return {"status": "error", "pesan_error": str(e), "tipe_error": type(e).__name__}
 
 @app.get("/")

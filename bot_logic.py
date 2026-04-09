@@ -1,4 +1,5 @@
 import os
+import time
 import pymssql
 from datetime import datetime, timedelta, timezone
 from openai import AzureOpenAI
@@ -38,6 +39,32 @@ def get_db_connection():
         database=DB_NAME
     )
 
+def ensure_db_ready(max_retries=6, wait_time=10) -> bool:
+    """
+    Mengetuk pintu database berulang kali sampai bangun dari mode 'Auto-pause'.
+    Maksimal mencoba 6 kali dengan jeda 10 detik (total nunggu 60 detik).
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Mencoba membuat koneksi
+            conn = get_db_connection()
+            # Melakukan kueri paling ringan untuk memastikan DB benar-benar merespon
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            conn.close()
+            
+            if attempt > 1:
+                print("✅ Database berhasil dibangunkan dari mode Sleep!")
+            return True
+            
+        except Exception as e:
+            print(f"⏳ Database masih tidur. Mencoba membangunkan... (Percobaan {attempt}/{max_retries})")
+            time.sleep(wait_time)  # Jeda 10 detik sebelum ketuk pintu lagi
+            
+    print("❌ Gagal membangunkan database setelah 60 detik.")
+    return False
+
 def check_table_exists() -> bool:
     """Mengecek apakah tabel 'users' sudah ada di database."""
     try:
@@ -55,44 +82,44 @@ def check_table_exists() -> bool:
         return False
 
 def init_db():
-    """Inisialisasi tabel di Azure SQL Database."""
+    """Inisialisasi tabel di Azure SQL Database secara aman."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Karena kita sudah mengecek eksistensi di luar, kita bisa langsung CREATE TABLE
         cursor.execute('''
-            CREATE TABLE users (
-                sender_number VARCHAR(50) PRIMARY KEY,
-                last_seen VARCHAR(50),
-                blocked_until VARCHAR(50),
-                spam_count INT,
-                spam_timer VARCHAR(50),
-                is_ai_off INT,
-                ai_off_timestamp VARCHAR(50),
-                is_excluded INT
-            )
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='users' and xtype='U')
+            BEGIN
+                CREATE TABLE users (
+                    sender_number VARCHAR(50) PRIMARY KEY,
+                    last_seen VARCHAR(50),
+                    blocked_until VARCHAR(50),
+                    spam_count INT,
+                    spam_timer VARCHAR(50),
+                    is_ai_off INT,
+                    ai_off_timestamp VARCHAR(50),
+                    is_excluded INT
+                )
+            END
         ''')
         conn.commit()
         conn.close()
-        print("✅ Tabel 'users' berhasil dibuat di Azure SQL!")
     except Exception as e:
-        print(f"❌ Terjadi kesalahan saat inisialisasi database: {e}")
-
-# ==========================================
-# LOGIKA PENGECEKAN DATABASE SAAT STARTUP
-# ==========================================
-if check_table_exists():
-    print("✅ Database dan tabel 'users' sudah tersedia. Melewati inisialisasi (init_db).")
-else:
-    print("🔧 Tabel 'users' belum ditemukan. Memulai pembuatan tabel...")
-    init_db()
+        print(f"❌ Gagal inisialisasi database: {e}")
 
 def get_user(sender_number: str) -> dict:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE sender_number=%s", (sender_number,))
-    row = cursor.fetchone()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE sender_number=%s", (sender_number,))
+        row = cursor.fetchone()
+        conn.close()
+    except pymssql.ProgrammingError as e:
+        if "Invalid object name" in str(e):
+            print("🔧 Tabel belum ada. Membuat tabel secara otomatis (Auto-heal)...")
+            init_db()
+            return get_user(sender_number)
+        else:
+            raise e
     
     if row is None:
         return None
