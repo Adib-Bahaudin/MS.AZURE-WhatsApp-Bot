@@ -178,6 +178,29 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     is_closed = current_hour < 7 or current_hour >= 19
     current_time_str = now.strftime('%H:%M WIB')
 
+    open_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    close_time = now.replace(hour=19, minute=0, second=0, microsecond=0)
+
+    if is_closed:
+        if current_hour >= 19:
+            next_open = open_time + timedelta(days=1)
+        else:
+            next_open = open_time
+        delta = next_open - now
+    else:
+        delta = close_time - now
+        
+    hours, remainder = divmod(delta.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    sisa_waktu_str = ""
+    if hours > 0 and minutes > 0:
+        sisa_waktu_str = f"{hours} jam {minutes} menit"
+    elif hours > 0:
+        sisa_waktu_str = f"{hours} jam"
+    else:
+        sisa_waktu_str = f"{minutes} menit"
+
     # ==========================================
     # FILTER 4: LOGIKA PELANGGAN BARU
     # ==========================================
@@ -238,14 +261,17 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         if is_closed:
             base_prompt += (
                 f"STATUS TOKO: TUTUP. Saat ini jam menunjukkan pukul {current_time_str}. (Jam buka: 07:00 - 19:00 WIB). "
+                f"INFORMASI WAKTU: Toko akan BUKA kembali dalam {sisa_waktu_str} lagi. "
                 "TUGASMU: Beritahu pelanggan dengan sangat ramah bahwa toko sedang tutup. "
-                "Sesuaikan sapaanmu dengan waktu. "
+                "Jika pelanggan bertanya kapan toko buka setelah jam 6 pagi, gunakan informasi sisa waktu tersebut untuk menjawab secara natural (contoh: 'sekitar 30 menit lagi ya kak'). "
                 "TOLAK permintaan cek harga/stok atau belanja dengan halus, dan persilakan mereka menghubungi kembali pada jam buka. "
                 "Pastikan informasi toko tutup dipisah ke dalam paragraf yang berbeda.\n"
             )
         else:
             base_prompt += (
                 f"STATUS TOKO: BUKA. Saat ini jam menunjukkan pukul {current_time_str}. "
+                f"INFORMASI WAKTU: Toko akan TUTUP dalam {sisa_waktu_str} lagi (Jam operasional berakhir pukul 19:00 WIB). "
+                "Jika pelanggan bertanya sampai jam berapa toko buka, kamu bisa memberikan estimasi sisa waktu tersebut secara natural agar mereka segera bersiap. "
                 "PENTING: Jika pengguna menanyakan hal di luar konteks belanja atau sapaan wajar, tolaklah menjawab dengan halus.\n"
                 "ATURAN KHUSUS: Karena database toko belum terhubung, kamu TIDAK BISA mengecek stok atau harga. "
                 "Oleh karena itu, jika niat pelanggan adalah menanyakan HARGA, STOK BARANG, atau INGIN MEMESAN, "
