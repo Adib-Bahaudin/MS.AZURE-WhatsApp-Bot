@@ -126,4 +126,9 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
         
     except Exception as e:
         print(f"❌ Error membaca webhook: {e}")
-        return {"status": "error"}
+        return {"status": "error", "pesan_error": str(e), "tipe_error": type(e).__name__}
+
+@app.get("/")
+async def root():
+    """Endpoint untuk Health Check Azure"""
+    return {"status": "online", "message": "WebApp Kasir AI Berjalan Sempurna!"}
