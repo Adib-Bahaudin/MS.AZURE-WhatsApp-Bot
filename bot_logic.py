@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import pymssql
 from datetime import datetime, timedelta, timezone
 from openai import AzureOpenAI
 from dotenv import load_dotenv
@@ -24,29 +24,73 @@ def set_global_closed(status: bool, reopen_info: str = None):
     global_settings["is_temporary_closed"] = status
     global_settings["reopen_info"] = reopen_info if status else None
 
-def init_db():
-    conn = sqlite3.connect('users.db', timeout=10)
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            sender_number TEXT PRIMARY KEY,
-            last_seen TEXT,
-            blocked_until TEXT,
-            spam_count INTEGER,
-            spam_timer TEXT,
-            is_ai_off INTEGER,
-            ai_off_timestamp TEXT,
-            is_excluded INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
+DB_SERVER = os.getenv("DB_SERVER")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_NAME = os.getenv("DB_NAME")
 
-init_db()
+def get_db_connection():
+    """Membuat koneksi ke Azure SQL Database menggunakan pymssql."""
+    return pymssql.connect(
+        server=DB_SERVER, 
+        user=DB_USER, 
+        password=DB_PASSWORD, 
+        database=DB_NAME
+    )
+
+def check_table_exists() -> bool:
+    """Mengecek apakah tabel 'users' sudah ada di database."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Mengecek ke skema informasi standar SQL Server
+        cursor.execute("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'users'")
+        result = cursor.fetchone()
+        conn.close()
+        
+        # Jika result ada isinya, berarti tabel sudah ada
+        return result is not None
+    except Exception as e:
+        print(f"⚠️ Gagal terhubung atau mengecek database: {e}")
+        return False
+
+def init_db():
+    """Inisialisasi tabel di Azure SQL Database."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Karena kita sudah mengecek eksistensi di luar, kita bisa langsung CREATE TABLE
+        cursor.execute('''
+            CREATE TABLE users (
+                sender_number VARCHAR(50) PRIMARY KEY,
+                last_seen VARCHAR(50),
+                blocked_until VARCHAR(50),
+                spam_count INT,
+                spam_timer VARCHAR(50),
+                is_ai_off INT,
+                ai_off_timestamp VARCHAR(50),
+                is_excluded INT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print("✅ Tabel 'users' berhasil dibuat di Azure SQL!")
+    except Exception as e:
+        print(f"❌ Terjadi kesalahan saat inisialisasi database: {e}")
+
+# ==========================================
+# LOGIKA PENGECEKAN DATABASE SAAT STARTUP
+# ==========================================
+if check_table_exists():
+    print("✅ Database dan tabel 'users' sudah tersedia. Melewati inisialisasi (init_db).")
+else:
+    print("🔧 Tabel 'users' belum ditemukan. Memulai pembuatan tabel...")
+    init_db()
 
 def get_user(sender_number: str) -> dict:
-    conn = sqlite3.connect('users.db', timeout=10)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE sender_number=?", (sender_number,))
+    cursor.execute("SELECT * FROM users WHERE sender_number=%s", (sender_number,))
     row = cursor.fetchone()
     conn.close()
     
@@ -64,21 +108,36 @@ def get_user(sender_number: str) -> dict:
     }
 
 def save_user(sender_number: str, user: dict):
-    conn = sqlite3.connect('users.db', timeout=10)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
+    
+    query = '''
+        IF EXISTS (SELECT 1 FROM users WHERE sender_number = %s)
+        BEGIN
+            UPDATE users SET last_seen=%s, blocked_until=%s, spam_count=%s, spam_timer=%s, is_ai_off=%s, ai_off_timestamp=%s, is_excluded=%s WHERE sender_number=%s
+        END
+        ELSE
+        BEGIN
+            INSERT INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        END
+    '''
+    
+    last_seen_str = user["last_seen"].isoformat() if user.get("last_seen") else None
+    blocked_until_str = user["blocked_until"].isoformat() if user.get("blocked_until") else None
+    spam_timer_str = user["spam_timer"].isoformat() if user.get("spam_timer") else None
+    ai_off_timestamp_str = user["ai_off_timestamp"].isoformat() if user.get("ai_off_timestamp") else None
+    
+    p_spam = user.get("spam_count", 0)
+    p_ai_off = 1 if user.get("is_ai_off") else 0
+    p_excluded = 1 if user.get("is_excluded") else 0
+
+    cursor.execute(query, (
         sender_number,
-        user["last_seen"].isoformat() if user.get("last_seen") else None,
-        user["blocked_until"].isoformat() if user.get("blocked_until") else None,
-        user.get("spam_count", 0),
-        user["spam_timer"].isoformat() if user.get("spam_timer") else None,
-        int(user.get("is_ai_off", False)),
-        user["ai_off_timestamp"].isoformat() if user.get("ai_off_timestamp") else None,
-        int(user.get("is_excluded", False))
+        last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded, sender_number,  # Eksekusi UPDATE
+        sender_number, last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded   # Eksekusi INSERT
     ))
+    
     conn.commit()
     conn.close()
 
