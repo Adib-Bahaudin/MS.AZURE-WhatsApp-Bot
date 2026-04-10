@@ -39,16 +39,13 @@ def get_db_connection():
         database=DB_NAME
     )
 
-def ensure_db_ready(max_retries=6, wait_time=10) -> bool:
+def ensure_db_ready(max_retries=20, wait_time=3) -> bool:
     """
     Mengetuk pintu database berulang kali sampai bangun dari mode 'Auto-pause'.
-    Maksimal mencoba 6 kali dengan jeda 10 detik (total nunggu 60 detik).
     """
     for attempt in range(1, max_retries + 1):
         try:
-            # Mencoba membuat koneksi
             conn = get_db_connection()
-            # Melakukan kueri paling ringan untuk memastikan DB benar-benar merespon
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
@@ -60,7 +57,7 @@ def ensure_db_ready(max_retries=6, wait_time=10) -> bool:
             
         except Exception as e:
             print(f"⏳ Database masih tidur. Mencoba membangunkan... (Percobaan {attempt}/{max_retries})")
-            time.sleep(wait_time)  # Jeda 10 detik sebelum ketuk pintu lagi
+            time.sleep(wait_time)
             
     print("❌ Gagal membangunkan database setelah 60 detik.")
     return False
@@ -70,12 +67,10 @@ def check_table_exists() -> bool:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Mengecek ke skema informasi standar SQL Server
         cursor.execute("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'users'")
         result = cursor.fetchone()
         conn.close()
         
-        # Jika result ada isinya, berarti tabel sudah ada
         return result is not None
     except Exception as e:
         print(f"⚠️ Gagal terhubung atau mengecek database: {e}")
@@ -372,7 +367,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     
     base_prompt += (
         "Diakhir baris Jawaban Kamu kamu wajib menambahkan footer, gunakan baris sendiri dibawah kalimat penutup kamu. " 
-        "ATURAN FOOTER: Kamu WAJIB menyertakan informasi kepada customer bahwa untuk mematikan fitur AI Respon cukup ketik '/matikan_ai', sampaikan dengan singkat dan ceria."
+        "ATURAN FOOTER: Kamu WAJIB menyertakan informasi kepada customer bahwa untuk mematikan fitur AI Respon cukup ketik /matikan_ai, sampaikan dengan singkat dan ceria."
     )
 
     # ==========================================

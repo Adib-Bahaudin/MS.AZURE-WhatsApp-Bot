@@ -47,10 +47,6 @@ def process_and_send_reply(incoming_text: str, sender_number: str, message_times
             return
 
         ai_reply = get_ai_response(incoming_text, sender_number)
-        
-        if latest_messages.get(sender_number) != message_timestamp:
-            print(f"⏩ Batal balas: {sender_number} mengirim pesan baru saat AI sedang mengetik.")
-            return
 
         if ai_reply != "SILENT_IGNORE":
             send_whatsapp_message(sender_number, ai_reply)
