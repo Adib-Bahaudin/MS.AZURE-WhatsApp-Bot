@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from chat_memory import save_chat_message, get_recent_chat_history
+
 client = AzureOpenAI(
     api_version="2024-12-01-preview",
     azure_endpoint=os.getenv("OPENAI_ENDPOINT"),
@@ -61,20 +63,6 @@ def ensure_db_ready(max_retries=20, wait_time=3) -> bool:
             
     print("❌ Gagal membangunkan database setelah 60 detik.")
     return False
-
-def check_table_exists() -> bool:
-    """Mengecek apakah tabel 'users' sudah ada di database."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'users'")
-        result = cursor.fetchone()
-        conn.close()
-        
-        return result is not None
-    except Exception as e:
-        print(f"⚠️ Gagal terhubung atau mengecek database: {e}")
-        return False
 
 def init_db():
     """Inisialisasi tabel di Azure SQL Database secara aman."""
@@ -219,6 +207,11 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         save_user(sender_number, user)
         return "SILENT_IGNORE"
 
+    save_chat_message(sender_number, "user", user_text)
+
+    if user_text == "client_dokument":
+        return "SILENT_IGNORE"
+
     # ==========================================
     # FILTER 0: CEK AI MATI & AUTO-WAKEUP 12 JAM
     # ==========================================
@@ -313,7 +306,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             f"INFORMASI PENTING: Saat ini jam {current_time_str}. Toko sedang TUTUP SEMENTARA. {info_tambahan} "
             "TUGAS ANDA: Beritahu pelanggan dengan bahasa yang sangat ramah, hangat, dan sopan bahwa admin sedang tidak di tempat. "
             "Minta mereka menunggu sebentar atau menghubungi lagi nanti. Jangan menerima pesanan atau cek harga sekarang. "
-            "ATURAN FORMAT: Gunakan spasi antar paragraf agar rapi."
+            "ATURAN FORMAT: Gunakan spasi antar paragraf agar rapi. "
         )
     else:
         base_prompt = (
@@ -322,13 +315,15 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
             "Jawablah dengan singkat dan tidak bertele-tele. "
             "ATURAN FORMAT JAWABAN KAMU: Kamu WAJIB menggunakan spasi antar paragraf (baris kosong/enter ganda) untuk memisahkan sapaan, informasi utama, dan penutup agar pesan rapi dan mudah dibaca di layar HP. "
             "ATURAN LINK: DILARANG KERAS menggunakan format markdown untuk tautan (seperti [teks](url)). Tuliskan URL secara mentah/polos saja.\n"
+            "ARURAN DOKUMEN: client_dokument adalah dokumen yang dikirimkan oleh customer. admin_dokument adalah dokumen dari admin. \n"
         )
 
         base_prompt += (
             "INFORMASI LAYANAN TOKO: Jika pelanggan bertanya tentang layanan, apa yang dijual, atau apa yang bisa dilakukan di toko, beritahu bahwa toko melayani: "
             "Foto Copy, Print Copy, Foto copy dan print copy bolak balik, Print Warna, Print bolak balik, Cetak Foto, Copy Warna, Laminating dokumen, Press dokumen, Scan dokumen, Jilid, dan Menjual Aneka ATK. "
             "Kamu bisa menyebutkan layanan ini dalam bentuk poin-poin yang rapi jika diminta.\n"
-            "jika customer ingin melakukan cetak foto atau print kamu bisa memberitahu customer untuk mengirimkan file terlebih dahulu, agar bisa diproses oleh admin. "
+            "jika customer ingin melakukan cetak foto atau print tetapi belum mengirimkan file kamu bisa memberitahu customer untuk mengirimkan file terlebih dahulu, agar bisa diproses oleh admin. "
+            "jika customer sudah mengirimkan file maka kamu bisa memberitahu customer untuk menunggu, katakan bahwa sebentar lagi pesanan akan dikerjakan. "
         )
 
         base_prompt += (
@@ -367,18 +362,23 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
     
     base_prompt += (
         "Diakhir baris Jawaban Kamu kamu wajib menambahkan footer, gunakan baris sendiri dibawah kalimat penutup kamu. " 
-        "ATURAN FOOTER: Kamu WAJIB menyertakan informasi kepada customer bahwa untuk mematikan fitur AI Respon cukup ketik /matikan_ai, sampaikan dengan singkat dan ceria."
+        "ATURAN FOOTER: Kamu WAJIB menyertakan informasi kepada customer bahwa untuk mematikan fitur AI Respon cukup ketik /matikan_ai, sampaikan dengan singkat dan ceria.\n"
+        "ATURAN SPAM: jika kamu mendeteksi customer melakukan spam kamu wajib membalas dengan kode rahasia ini: SPAM_DETECT. Jangan tambahkan kata apapun selain SPAM_DETECT. "
+        "JANGAN deteksi spam jika customer mengirimkan banyak dokumen. "
     )
 
     # ==========================================
     # EKSEKUSI KE AZURE OPENAI & POST-PROCESSING
     # ==========================================
     try:
+
+        chat_history = get_recent_chat_history(sender_number, limit=10)
+
+        messages = [{"role": "system", "content": base_prompt}]
+        messages.extend(chat_history)
+
         response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": base_prompt},
-                {"role": "user", "content": user_text}
-            ],
+            messages=messages,
             model=os.getenv("OPENAI_DEPLOYMENT_NAME"),
             max_tokens=250,
             temperature=0.6
@@ -389,9 +389,15 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         if "ESKALASI_ADMIN" in ai_reply:
             user["blocked_until"] = now + timedelta(hours=1)
             save_user(sender_number, user)
-            return "Terkait info produk, stok, atau harga, Admin Toko kami akan membalas pesan kakak secara manual sesaat lagi ya. Mohon ditunggu... 👨‍💻\n*(Asisten AI dijeda 1 jam)*"
+            eskalasi_msg = "Terkait info produk, stok, atau harga, Admin Toko kami akan membalas pesan kakak secara manual sesaat lagi ya. Mohon ditunggu... 👨‍💻\n*(Asisten AI dijeda 1 jam)*"
+            
+            save_chat_message(sender_number, "assistant", eskalasi_msg)
+            return eskalasi_msg
 
         save_user(sender_number, user)
+        
+        save_chat_message(sender_number, "assistant", ai_reply)
+        
         return ai_reply
 
     except Exception as e:

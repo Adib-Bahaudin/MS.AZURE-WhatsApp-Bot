@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from bot_logic import get_ai_response, toggle_ai, set_global_closed, set_permanent_exclude, ensure_db_ready
+from chat_memory import init_chat_db, save_chat_message, cleanup_old_history
+
+init_chat_db()
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
@@ -48,8 +51,12 @@ def process_and_send_reply(incoming_text: str, sender_number: str, message_times
 
         ai_reply = get_ai_response(incoming_text, sender_number)
 
-        if ai_reply != "SILENT_IGNORE":
+        if ai_reply != "SILENT_IGNORE" and ai_reply != "SPAM_DETECT":
             send_whatsapp_message(sender_number, ai_reply)
+        elif ai_reply == "SPAM_DETECT":
+            toggle_ai(sender_number, turn_off=True)
+            print(f"🛑 AI DIMATIKAN otomatis karena SPAM untuk {sender_number}")
+            send_whatsapp_message(sender_number, "*(Sistem: SPAM Detect, AI telah dimatikan untuk chat ini)*")
         else:
             print(f"🤫 Bot diam (Nomor {sender_number} sedang jeda admin/spam/AI off)")
             
@@ -60,6 +67,8 @@ def process_and_send_reply(incoming_text: str, sender_number: str, message_times
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
     """Menerima Webhook dari Evolution API."""
     try:
+        background_tasks.add_task(cleanup_old_history, 1)
+
         payload = await request.json()
         event_type = payload.get("event")
         
@@ -123,26 +132,36 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                     set_permanent_exclude(sender_number, False)
                     background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: Chat ini telah DITAMBAHKAN kembali ke daftar AI)*")
                     return {"status": "success"}
+
+                else:
+                    admin_text = ""
+                    if "imageMessage" in message_info or "documentMessage" in message_info:
+                        admin_text = "admin_dokument"
+                    elif incoming_text:
+                        admin_text = incoming_text
+
+                    if admin_text:
+                        save_chat_message(sender_number, "assistant", admin_text)
+                        print(f"💾 Disimpan ke memori (Admin): {admin_text}")
                 
                 return {"status": "ignored", "reason": "fromMe"}
             
-            media_types = [
-                "audioMessage", "imageMessage", "videoMessage", 
-                "stickerMessage", "documentMessage", "locationMessage",
-                "contactMessage", "reactionMessage"
+            media_types_ignore = [
+                "audioMessage", "videoMessage", "stickerMessage", 
+                "locationMessage", "contactMessage", "reactionMessage"
             ]
             
-            if any(media in message_info for media in media_types):
-                print(f"⏩ Mengabaikan pesan non-teks dari {sender_number}")
+            if any(media in message_info for media in media_types_ignore):
+                print(f"⏩ Mengabaikan pesan media tertentu dari {sender_number}")
                 return {"status": "ignored", "reason": "media_message"}
 
+            if "imageMessage" in message_info or "documentMessage" in message_info:
+                incoming_text = "client_dokument"
+            
             if incoming_text:
                 print(f"📥 Pesan masuk dari {sender_number}: {incoming_text}")
-                
                 current_time = time.time()
-                
                 latest_messages[sender_number] = current_time
-                
                 background_tasks.add_task(process_and_send_reply, incoming_text, sender_number, current_time)
                 
         return {"status": "success"}
