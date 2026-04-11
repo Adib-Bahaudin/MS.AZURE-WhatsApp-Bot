@@ -1,6 +1,8 @@
+import sys
 import os
 import time
 import requests
+import logging
 from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
@@ -17,6 +19,13 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 app = FastAPI(title="WhatsApp POS Bot (Evolution API)")
 
 latest_messages = {}
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 def send_whatsapp_message(to_number: str, message_text: str):
     """Mengirim balasan via Evolution API."""
@@ -35,9 +44,9 @@ def send_whatsapp_message(to_number: str, message_text: str):
     try:
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
-        print(f"✅ Pesan terkirim ke {to_number}")
+        logger.info(f"✅ Pesan terkirim ke {to_number}")
     except requests.exceptions.RequestException as e:
-        print(f"❌ Gagal mengirim pesan: {response.text if 'response' in locals() else e}")
+        logger.info(f"❌ Gagal mengirim pesan: {response.text if 'response' in locals() else e}")
 
 def process_and_send_reply(incoming_text: str, sender_number: str, message_timestamp: float):
     """Memproses AI di latar belakang dengan sistem prioritas pesan terbaru."""
@@ -46,7 +55,7 @@ def process_and_send_reply(incoming_text: str, sender_number: str, message_times
         ensure_db_ready() 
         
         if latest_messages.get(sender_number) != message_timestamp:
-            print(f"⏩ Batal proses AI: Ada pesan yang lebih baru dari {sender_number}.")
+            logger.info(f"⏩ Batal proses AI: Ada pesan yang lebih baru dari {sender_number}.")
             return
 
         ai_reply = get_ai_response(incoming_text, sender_number)
@@ -55,13 +64,13 @@ def process_and_send_reply(incoming_text: str, sender_number: str, message_times
             send_whatsapp_message(sender_number, ai_reply)
         elif ai_reply == "SPAM_DETECT":
             toggle_ai(sender_number, turn_off=True)
-            print(f"🛑 AI DIMATIKAN otomatis karena SPAM untuk {sender_number}")
+            logger.info(f"🛑 AI DIMATIKAN otomatis karena SPAM untuk {sender_number}")
             send_whatsapp_message(sender_number, "*(Sistem: SPAM Detect, AI telah dimatikan untuk chat ini)*")
         else:
-            print(f"🤫 Bot diam (Nomor {sender_number} sedang jeda admin/spam/AI off)")
+            logger.info(f"🤫 Bot diam (Nomor {sender_number} sedang jeda admin/spam/AI off)")
             
     except Exception as e:
-        print(f"❌ Error memproses AI: {e}")
+        logger.info(f"❌ Error memproses AI: {e}")
 
 @app.post("/webhook")
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
@@ -93,14 +102,14 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
 
             if command == "/matikan_ai":
                 toggle_ai(sender_number, turn_off=True)
-                print(f"🛑 AI DIMATIKAN secara manual untuk {sender_number}")
+                logger.info(f"🛑 AI DIMATIKAN secara manual untuk {sender_number}")
                 background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dimatikan untuk chat ini)*")
                 return {"status": "success", "reason": "ai_disabled_manually"}
 
             if key_info.get("fromMe") == True:
                 if command == "/hidupkan_ai":
                     toggle_ai(sender_number, turn_off=False)
-                    print(f"✅ AI DIHIDUPKAN secara manual untuk {sender_number}")
+                    logger.info(f"✅ AI DIHIDUPKAN secara manual untuk {sender_number}")
                     background_tasks.add_task(send_whatsapp_message, sender_number, "*(Sistem: AI telah dihidupkan untuk chat ini)*")
                     return {"status": "success", "reason": "ai_enabled_manually"}
 
@@ -142,7 +151,7 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
 
                     if admin_text:
                         save_chat_message(sender_number, "assistant", admin_text)
-                        print(f"💾 Disimpan ke memori (Admin): {admin_text}")
+                        logger.info(f"💾 Disimpan ke memori (Admin): {admin_text}")
                 
                 return {"status": "ignored", "reason": "fromMe"}
             
@@ -152,14 +161,14 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             ]
             
             if any(media in message_info for media in media_types_ignore):
-                print(f"⏩ Mengabaikan pesan media tertentu dari {sender_number}")
+                logger.info(f"⏩ Mengabaikan pesan media tertentu dari {sender_number}")
                 return {"status": "ignored", "reason": "media_message"}
 
             if "imageMessage" in message_info or "documentMessage" in message_info:
                 incoming_text = "client_dokument"
             
             if incoming_text:
-                print(f"📥 Pesan masuk dari {sender_number}: {incoming_text}")
+                logger.info(f"📥 Pesan masuk dari {sender_number}: {incoming_text}")
                 current_time = time.time()
                 latest_messages[sender_number] = current_time
                 background_tasks.add_task(process_and_send_reply, incoming_text, sender_number, current_time)
@@ -168,7 +177,7 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
         
     except Exception as e:
         import traceback
-        print(f"❌ Error membaca webhook: {traceback.format_exc()}")
+        logger.info(f"❌ Error membaca webhook: {traceback.format_exc()}")
         return {"status": "error", "pesan_error": str(e), "tipe_error": type(e).__name__}
 
 @app.get("/")

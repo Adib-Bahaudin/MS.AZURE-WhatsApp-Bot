@@ -1,6 +1,8 @@
+import sys
 import os
 import time
 import pymssql
+import logging
 from datetime import datetime, timedelta, timezone
 from openai import AzureOpenAI
 from dotenv import load_dotenv
@@ -8,6 +10,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from chat_memory import save_chat_message, get_recent_chat_history
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 client = AzureOpenAI(
     api_version="2024-12-01-preview",
@@ -54,14 +63,14 @@ def ensure_db_ready(max_retries=20, wait_time=3) -> bool:
             conn.close()
             
             if attempt > 1:
-                print("✅ Database berhasil dibangunkan dari mode Sleep!")
+                logger.info("✅ Database berhasil dibangunkan dari mode Sleep!")
             return True
             
         except Exception as e:
-            print(f"⏳ Database masih tidur. Mencoba membangunkan... (Percobaan {attempt}/{max_retries})")
+            logger.info(f"⏳ Database masih tidur. Mencoba membangunkan... (Percobaan {attempt}/{max_retries})")
             time.sleep(wait_time)
             
-    print("❌ Gagal membangunkan database setelah 60 detik.")
+    logger.info("❌ Gagal membangunkan database setelah 60 detik.")
     return False
 
 def init_db():
@@ -87,7 +96,7 @@ def init_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ Gagal inisialisasi database: {e}")
+        logger.info(f"❌ Gagal inisialisasi database: {e}")
 
 def get_user(sender_number: str) -> dict:
     try:
@@ -98,7 +107,7 @@ def get_user(sender_number: str) -> dict:
         conn.close()
     except pymssql.ProgrammingError as e:
         if "Invalid object name" in str(e):
-            print("🔧 Tabel belum ada. Membuat tabel secara otomatis (Auto-heal)...")
+            logger.info("🔧 Tabel belum ada. Membuat tabel secara otomatis (Auto-heal)...")
             init_db()
             return get_user(sender_number)
         else:
@@ -220,7 +229,7 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         if off_time and (now - off_time) > timedelta(hours=12):
             user["is_ai_off"] = False
             user["ai_off_timestamp"] = None
-            print(f"🔄 [Sistem] AI otomatis dihidupkan kembali untuk {sender_number} karena sudah > 12 jam.")
+            logger.info(f"🔄 [Sistem] AI otomatis dihidupkan kembali untuk {sender_number} karena sudah > 12 jam.")
         else:
             save_user(sender_number, user)
             return "SILENT_IGNORE"
@@ -401,6 +410,6 @@ def get_ai_response(user_text: str, sender_number: str) -> str:
         return ai_reply
 
     except Exception as e:
-        print(f"❌ Error pada Azure OpenAI: {e}")
+        logger.info(f"❌ Error pada Azure OpenAI: {e}")
         save_user(sender_number, user)
         return "Mohon maaf kak, sistem asisten kami sedang gangguan sesaat. 🙏"

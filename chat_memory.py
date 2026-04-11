@@ -1,4 +1,13 @@
+import sys
 import sqlite3
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 DB_NAME = "chat_history.db"
 
@@ -55,6 +64,6 @@ def cleanup_old_history(days: int = 3):
         conn.close()
         
         if deleted_rows > 0:
-            print(f"🧹 Membersihkan {deleted_rows} pesan lama (> {days} hari) dari memori AI.")
+            logger.info(f"🧹 Membersihkan {deleted_rows} pesan lama (> {days} hari) dari memori AI.")
     except Exception as e:
-        print(f"❌ Error saat membersihkan history lama: {e}")
+        logger.info(f"❌ Error saat membersihkan history lama: {e}")
