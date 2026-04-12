@@ -3,6 +3,7 @@ import os
 import time
 import requests
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, BackgroundTasks
 from dotenv import load_dotenv
 
@@ -10,13 +11,28 @@ load_dotenv()
 from bot_logic import get_ai_response, toggle_ai, set_global_closed, set_permanent_exclude, ensure_db_ready
 from chat_memory import init_chat_db, save_chat_message, cleanup_old_history
 
-init_chat_db()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 Memulai Webhook Server...")
+    
+    init_chat_db()
+    
+    db_ready = ensure_db_ready(max_retries=15, wait_time=2)
+    
+    if db_ready:
+        logger.info("✅ Koneksi database utama stabil.")
+    else:
+        logger.error("⚠️ PERINGATAN: Database utama tidak terdeteksi. Bot mungkin gagal menyimpan data.")
+
+    yield
+
+    logger.info("🛑 Mematikan Webhook Server...")
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 
-app = FastAPI(title="WhatsApp POS Bot (Evolution API)")
+app = FastAPI(title="WhatsApp POS Bot", lifespan=lifespan)
 
 latest_messages = {}
 
@@ -51,8 +67,6 @@ def send_whatsapp_message(to_number: str, message_text: str):
 def process_and_send_reply(incoming_text: str, sender_number: str, message_timestamp: float):
     """Memproses AI di latar belakang dengan sistem prioritas pesan terbaru."""
     try:
-        
-        ensure_db_ready() 
         
         if latest_messages.get(sender_number) != message_timestamp:
             logger.info(f"⏩ Batal proses AI: Ada pesan yang lebih baru dari {sender_number}.")

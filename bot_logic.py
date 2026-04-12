@@ -1,7 +1,8 @@
 import sys
+import psycopg2
+from psycopg2 import errors, pool
 import os
 import time
-import pymssql
 import logging
 from datetime import datetime, timedelta, timezone
 from openai import AzureOpenAI
@@ -42,61 +43,52 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
 
 def get_db_connection():
-    """Membuat koneksi ke Azure SQL Database menggunakan pymssql."""
-    return pymssql.connect(
-        server=DB_SERVER, 
-        user=DB_USER, 
-        password=DB_PASSWORD, 
-        database=DB_NAME
-    )
+    # Contoh isi .env: DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[PROJECT-ID].supabase.co:5432/postgres
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
-def ensure_db_ready(max_retries=20, wait_time=3) -> bool:
-    """
-    Mengetuk pintu database berulang kali sampai bangun dari mode 'Auto-pause'.
-    """
+def ensure_db_ready(max_retries=15, wait_time=2) -> bool:
+    """Mengecek akses database saat startup."""
     for attempt in range(1, max_retries + 1):
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
+            cursor.close()
             conn.close()
             
-            if attempt > 1:
-                logger.info("✅ Database berhasil dibangunkan dari mode Sleep!")
+            init_db()
             return True
             
         except Exception as e:
-            logger.info(f"⏳ Database masih tidur. Mencoba membangunkan... (Percobaan {attempt}/{max_retries})")
+            logger.warning(f"⏳ DB belum siap (Percobaan {attempt}/{max_retries}). Menunggu...")
             time.sleep(wait_time)
             
-    logger.info("❌ Gagal membangunkan database setelah 60 detik.")
     return False
 
 def init_db():
-    """Inisialisasi tabel di Azure SQL Database secara aman."""
+    """Inisialisasi tabel di PostgreSQL secara aman."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='users' and xtype='U')
-            BEGIN
-                CREATE TABLE users (
-                    sender_number VARCHAR(50) PRIMARY KEY,
-                    last_seen VARCHAR(50),
-                    blocked_until VARCHAR(50),
-                    spam_count INT,
-                    spam_timer VARCHAR(50),
-                    is_ai_off INT,
-                    ai_off_timestamp VARCHAR(50),
-                    is_excluded INT
-                )
-            END
+            CREATE TABLE IF NOT EXISTS users (
+                sender_number VARCHAR(50) PRIMARY KEY,
+                last_seen VARCHAR(50),
+                blocked_until VARCHAR(50),
+                spam_count INT DEFAULT 0,
+                spam_timer VARCHAR(50),
+                is_ai_off INT DEFAULT 0,
+                ai_off_timestamp VARCHAR(50),
+                is_excluded INT DEFAULT 0
+            );
         ''')
         conn.commit()
+        cursor.close()
         conn.close()
+        logger.info("📑 Struktur tabel 'users' diverifikasi.")
     except Exception as e:
-        logger.info(f"❌ Gagal inisialisasi database: {e}")
+        logger.error(f"❌ Gagal inisialisasi tabel: {e}")
 
 def get_user(sender_number: str) -> dict:
     try:
@@ -105,13 +97,13 @@ def get_user(sender_number: str) -> dict:
         cursor.execute("SELECT * FROM users WHERE sender_number=%s", (sender_number,))
         row = cursor.fetchone()
         conn.close()
-    except pymssql.ProgrammingError as e:
-        if "Invalid object name" in str(e):
-            logger.info("🔧 Tabel belum ada. Membuat tabel secara otomatis (Auto-heal)...")
-            init_db()
-            return get_user(sender_number)
-        else:
-            raise e
+    except errors.UndefinedTable:
+        logger.info("🔧 Tabel belum ada di Supabase. Membuat tabel otomatis (Auto-heal)...")
+        conn.rollback()
+        init_db() 
+        return get_user(sender_number)
+    except Exception as e:
+        raise e
     
     if row is None:
         return None
@@ -130,18 +122,6 @@ def save_user(sender_number: str, user: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    query = '''
-        IF EXISTS (SELECT 1 FROM users WHERE sender_number = %s)
-        BEGIN
-            UPDATE users SET last_seen=%s, blocked_until=%s, spam_count=%s, spam_timer=%s, is_ai_off=%s, ai_off_timestamp=%s, is_excluded=%s WHERE sender_number=%s
-        END
-        ELSE
-        BEGIN
-            INSERT INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        END
-    '''
-    
     last_seen_str = user["last_seen"].isoformat() if user.get("last_seen") else None
     blocked_until_str = user["blocked_until"].isoformat() if user.get("blocked_until") else None
     spam_timer_str = user["spam_timer"].isoformat() if user.get("spam_timer") else None
@@ -151,13 +131,26 @@ def save_user(sender_number: str, user: dict):
     p_ai_off = 1 if user.get("is_ai_off") else 0
     p_excluded = 1 if user.get("is_excluded") else 0
 
+    query = '''
+        INSERT INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (sender_number) 
+        DO UPDATE SET 
+            last_seen = EXCLUDED.last_seen,
+            blocked_until = EXCLUDED.blocked_until,
+            spam_count = EXCLUDED.spam_count,
+            spam_timer = EXCLUDED.spam_timer,
+            is_ai_off = EXCLUDED.is_ai_off,
+            ai_off_timestamp = EXCLUDED.ai_off_timestamp,
+            is_excluded = EXCLUDED.is_excluded;
+    '''
+    
     cursor.execute(query, (
-        sender_number,
-        last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded, sender_number,  # Eksekusi UPDATE
-        sender_number, last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded   # Eksekusi INSERT
+        sender_number, last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded
     ))
     
     conn.commit()
+    cursor.close()
     conn.close()
 
 def set_permanent_exclude(sender_number: str, status: bool):
