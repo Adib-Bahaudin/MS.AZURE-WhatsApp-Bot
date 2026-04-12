@@ -12,6 +12,13 @@ load_dotenv()
 
 from chat_memory import save_chat_message, get_recent_chat_history
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
 try:
     db_pool = psycopg2.pool.SimpleConnectionPool(
         1, 10, os.getenv("DATABASE_URL")
@@ -20,13 +27,6 @@ try:
         logger.info("✅ Connection pool ke Supabase berhasil dibuat.")
 except Exception as e:
     logger.error(f"❌ Gagal membuat connection pool: {e}")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
 
 client = AzureOpenAI(
     api_version="2024-12-01-preview",
@@ -46,29 +46,28 @@ def set_global_closed(status: bool, reopen_info: str = None):
     global_settings["is_temporary_closed"] = status
     global_settings["reopen_info"] = reopen_info if status else None
 
-DB_SERVER = os.getenv("DB_SERVER")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-
 def get_db_connection():
     return db_pool.getconn()
 
 def ensure_db_ready(max_retries=15, wait_time=2) -> bool:
     """Mengecek akses database saat startup."""
     for attempt in range(1, max_retries + 1):
+        conn = None
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
             cursor.close()
-            conn.close()
+            db_pool.putconn(conn)
+            conn = None
             
             init_db()
             return True
             
         except Exception as e:
+            if conn:
+                db_pool.putconn(conn)
             logger.warning(f"⏳ DB belum siap (Percobaan {attempt}/{max_retries}). Menunggu...")
             time.sleep(wait_time)
             
@@ -104,19 +103,24 @@ def init_db():
             db_pool.putconn(conn)
 
 def get_user(sender_number: str) -> dict:
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM users WHERE sender_number=%s", (sender_number,))
         row = cursor.fetchone()
-        conn.close()
     except errors.UndefinedTable:
         logger.info("🔧 Tabel belum ada di Supabase. Membuat tabel otomatis (Auto-heal)...")
-        conn.rollback()
+        if conn:
+            conn.rollback()
+            db_pool.putconn(conn)
         init_db() 
         return get_user(sender_number)
     except Exception as e:
         raise e
+    finally:
+        if conn:
+            db_pool.putconn(conn)
     
     if row is None:
         return None
