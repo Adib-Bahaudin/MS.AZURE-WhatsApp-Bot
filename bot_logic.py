@@ -1,6 +1,6 @@
 import sys
 import psycopg2
-from psycopg2 import errors
+from psycopg2 import errors, pool
 import os
 import time
 import logging
