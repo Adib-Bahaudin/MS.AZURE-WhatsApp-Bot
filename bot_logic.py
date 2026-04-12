@@ -12,6 +12,15 @@ load_dotenv()
 
 from chat_memory import save_chat_message, get_recent_chat_history
 
+try:
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        1, 10, os.getenv("DATABASE_URL")
+    )
+    if db_pool:
+        logger.info("✅ Connection pool ke Supabase berhasil dibuat.")
+except Exception as e:
+    logger.error(f"❌ Gagal membuat connection pool: {e}")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -43,8 +52,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
 
 def get_db_connection():
-    # Contoh isi .env: DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[PROJECT-ID].supabase.co:5432/postgres
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+    return db_pool.getconn()
 
 def ensure_db_ready(max_retries=15, wait_time=2) -> bool:
     """Mengecek akses database saat startup."""
@@ -68,6 +76,7 @@ def ensure_db_ready(max_retries=15, wait_time=2) -> bool:
 
 def init_db():
     """Inisialisasi tabel di PostgreSQL secara aman."""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -85,10 +94,14 @@ def init_db():
         ''')
         conn.commit()
         cursor.close()
-        conn.close()
         logger.info("📑 Struktur tabel 'users' diverifikasi.")
     except Exception as e:
         logger.error(f"❌ Gagal inisialisasi tabel: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            db_pool.putconn(conn)
 
 def get_user(sender_number: str) -> dict:
     try:
@@ -119,39 +132,47 @@ def get_user(sender_number: str) -> dict:
     }
 
 def save_user(sender_number: str, user: dict):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    last_seen_str = user["last_seen"].isoformat() if user.get("last_seen") else None
-    blocked_until_str = user["blocked_until"].isoformat() if user.get("blocked_until") else None
-    spam_timer_str = user["spam_timer"].isoformat() if user.get("spam_timer") else None
-    ai_off_timestamp_str = user["ai_off_timestamp"].isoformat() if user.get("ai_off_timestamp") else None
-    
-    p_spam = user.get("spam_count", 0)
-    p_ai_off = 1 if user.get("is_ai_off") else 0
-    p_excluded = 1 if user.get("is_excluded") else 0
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        last_seen_str = user["last_seen"].isoformat() if user.get("last_seen") else None
+        blocked_until_str = user["blocked_until"].isoformat() if user.get("blocked_until") else None
+        spam_timer_str = user["spam_timer"].isoformat() if user.get("spam_timer") else None
+        ai_off_timestamp_str = user["ai_off_timestamp"].isoformat() if user.get("ai_off_timestamp") else None
+        
+        p_spam = user.get("spam_count", 0)
+        p_ai_off = 1 if user.get("is_ai_off") else 0
+        p_excluded = 1 if user.get("is_excluded") else 0
 
-    query = '''
-        INSERT INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (sender_number) 
-        DO UPDATE SET 
-            last_seen = EXCLUDED.last_seen,
-            blocked_until = EXCLUDED.blocked_until,
-            spam_count = EXCLUDED.spam_count,
-            spam_timer = EXCLUDED.spam_timer,
-            is_ai_off = EXCLUDED.is_ai_off,
-            ai_off_timestamp = EXCLUDED.ai_off_timestamp,
-            is_excluded = EXCLUDED.is_excluded;
-    '''
-    
-    cursor.execute(query, (
-        sender_number, last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded
-    ))
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
+        query = '''
+            INSERT INTO users (sender_number, last_seen, blocked_until, spam_count, spam_timer, is_ai_off, ai_off_timestamp, is_excluded) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (sender_number) 
+            DO UPDATE SET 
+                last_seen = EXCLUDED.last_seen,
+                blocked_until = EXCLUDED.blocked_until,
+                spam_count = EXCLUDED.spam_count,
+                spam_timer = EXCLUDED.spam_timer,
+                is_ai_off = EXCLUDED.is_ai_off,
+                ai_off_timestamp = EXCLUDED.ai_off_timestamp,
+                is_excluded = EXCLUDED.is_excluded;
+        '''
+        
+        cursor.execute(query, (
+            sender_number, last_seen_str, blocked_until_str, p_spam, spam_timer_str, p_ai_off, ai_off_timestamp_str, p_excluded
+        ))
+        
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"❌ Error saat save_user untuk {sender_number}: {e}")
+    finally:
+        if conn:
+            db_pool.putconn(conn)
 
 def set_permanent_exclude(sender_number: str, status: bool):
     """Mengatur pengecualian AI secara permanen untuk nomor tertentu"""
