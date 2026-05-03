@@ -90,6 +90,7 @@ def init_db():
                 ai_off_timestamp VARCHAR(50),
                 is_excluded INT DEFAULT 0
             );
+            ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
         ''')
         conn.commit()
         cursor.close()
